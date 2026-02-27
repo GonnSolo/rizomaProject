@@ -27,6 +27,13 @@ GENERAL TIPS
 * /qr will generate an image with the session's encrypted key as a QR code, the host's alias and the session's secret.
 * The loadingbay is how you transfer files, loadingbay_out is what you send, loadingbay_in is what you recieve.
 
+V1.1 Update:
+
+* INTRODUCING THE VOID. A public chat room with all the security and privacy features of the rest of the app, but on a shared address (if there's nobody hosting, the first person to join will host). Join and it may just whisper back.
+* /whisper to send a private message in a group, and /loadingbay sendto to send a file to a single person.
+* /loadingbay now requests permission to recieve the files (can't believe I let this slide in the first release, but now you should be safe).
+* Extensive commenting to the files to make the project readable (I don't comment, but it made the project unreadable so I asked Gemini for help in commenting the code, I hope it is useful).
+
 Thanks for reading,
-I will remain at your service
+I will remain at your service: 
 Gonzalo "GonnSolo" García.

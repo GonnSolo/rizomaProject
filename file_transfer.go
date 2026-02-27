@@ -12,41 +12,40 @@ import (
 	"strings"
 )
 
- 
+// FileMessage defines the structure for messages used during file transfer operations.
 type FileMessage struct {
-	Type        string `json:"type"`          
-	Filename    string `json:"filename"`      
-	FileSize    int64  `json:"file_size"`     
-	ChunkNum    int    `json:"chunk_num"`     
-	TotalChunks int    `json:"total_chunks"`  
-	Data        string `json:"data"`          
-	Checksum    string `json:"checksum"`      
+	Type        string `json:"type"`         // Message category: "file_offer", "file_accept", "file_chunk", "file_end", or "file_error"
+	Filename    string `json:"filename"`     // Name of the file being transferred (excluding path)
+	FileSize    int64  `json:"file_size"`    // Total size of the file in bytes
+	ChunkNum    int    `json:"chunk_num"`    // Index of the current data chunk (0-based)
+	TotalChunks int    `json:"total_chunks"` // Total number of chunks expected for the transfer
+	Data        string `json:"data"`         // Base64-encoded binary data of the current chunk
+	Checksum    string `json:"checksum"`     // SHA-256 hash of the complete file for integrity verification
 }
 
 const (
-	FileChunkSize = 32 * 1024  
+	// FileChunkSize defines the size of each data chunk (32KB).
+	FileChunkSize = 32 * 1024
 )
 
- 
+// FileTransferState maintains the progress and data of an active file transfer.
 type FileTransferState struct {
-	Filename    string
-	FileSize    int64
-	TotalChunks int
-	Checksum    string
-	Chunks      map[int][]byte  
-	Progress    int             
+	Filename    string         // Name of the file
+	FileSize    int64          // Total size of the file
+	TotalChunks int            // Total number of chunks expected
+	Checksum    string         // Expected SHA-256 checksum
+	Chunks      map[int][]byte // Mapping of chunk indices to their binary data
+	Progress    int            // Number of chunks successfully received so far
 }
 
- 
+// SendFile reads a file from disk and broadcasts it in chunks through the outgoing channel.
 func SendFile(filepath string, outgoing chan<- string) error {
-	 
 	file, err := os.Open(filepath)
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	 
 	stat, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("failed to stat file: %w", err)
@@ -55,22 +54,21 @@ func SendFile(filepath string, outgoing chan<- string) error {
 	filename := stat.Name()
 	fileSize := stat.Size()
 
-	 
+	// Calculate the SHA-256 checksum for the entire file.
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {
 		return fmt.Errorf("failed to calculate checksum: %w", err)
 	}
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
-	 
+	// Reset the file pointer to the beginning after checksum calculation.
 	if _, err := file.Seek(0, 0); err != nil {
 		return fmt.Errorf("failed to reset file: %w", err)
 	}
 
-	 
 	totalChunks := int((fileSize + FileChunkSize - 1) / FileChunkSize)
 
-	 
+	// Broadcast the file offer message.
 	offer := FileMessage{
 		Type:        "file_offer",
 		Filename:    filename,
@@ -81,7 +79,7 @@ func SendFile(filepath string, outgoing chan<- string) error {
 	offerJSON, _ := json.Marshal(offer)
 	outgoing <- string(offerJSON)
 
-	 
+	// Stream file chunks.
 	buffer := make([]byte, FileChunkSize)
 	chunkNum := 0
 
@@ -91,7 +89,7 @@ func SendFile(filepath string, outgoing chan<- string) error {
 			break
 		}
 		if err != nil {
-			 
+			// Notify the receiver of the error during transmission.
 			errMsg := FileMessage{
 				Type:     "file_error",
 				Filename: filename,
@@ -102,7 +100,6 @@ func SendFile(filepath string, outgoing chan<- string) error {
 			return fmt.Errorf("failed to read chunk: %w", err)
 		}
 
-		 
 		encoded := base64.StdEncoding.EncodeToString(buffer[:n])
 
 		chunk := FileMessage{
@@ -118,7 +115,7 @@ func SendFile(filepath string, outgoing chan<- string) error {
 		chunkNum++
 	}
 
-	 
+	// Broadcast the completion message.
 	end := FileMessage{
 		Type:     "file_end",
 		Filename: filename,
@@ -130,19 +127,16 @@ func SendFile(filepath string, outgoing chan<- string) error {
 	return nil
 }
 
- 
+// SendFileFromBytes broadcasts data provided as a byte slice as a file through the outgoing channel.
 func SendFileFromBytes(filename string, data []byte, outgoing chan<- string) error {
 	fileSize := int64(len(data))
 
-	 
 	hasher := sha256.New()
 	hasher.Write(data)
 	checksum := hex.EncodeToString(hasher.Sum(nil))
 
-	 
 	totalChunks := int((fileSize + FileChunkSize - 1) / FileChunkSize)
 
-	 
 	offer := FileMessage{
 		Type:        "file_offer",
 		Filename:    filename,
@@ -153,7 +147,6 @@ func SendFileFromBytes(filename string, data []byte, outgoing chan<- string) err
 	offerJSON, _ := json.Marshal(offer)
 	outgoing <- string(offerJSON)
 
-	 
 	for i := 0; i < totalChunks; i++ {
 		start := i * FileChunkSize
 		end := start + FileChunkSize
@@ -161,7 +154,6 @@ func SendFileFromBytes(filename string, data []byte, outgoing chan<- string) err
 			end = len(data)
 		}
 
-		 
 		encoded := base64.StdEncoding.EncodeToString(data[start:end])
 
 		chunk := FileMessage{
@@ -175,7 +167,6 @@ func SendFileFromBytes(filename string, data []byte, outgoing chan<- string) err
 		outgoing <- string(chunkJSON)
 	}
 
-	 
 	end := FileMessage{
 		Type:     "file_end",
 		Filename: filename,
@@ -187,16 +178,14 @@ func SendFileFromBytes(filename string, data []byte, outgoing chan<- string) err
 	return nil
 }
 
- 
+// SendFolder broadcasts every file within the 'loadingbay_out' directory.
 func SendFolder(outgoing chan<- string) error {
 	loadingBayOut := "loadingbay_out"
 
-	 
 	if _, err := os.Stat(loadingBayOut); os.IsNotExist(err) {
 		return fmt.Errorf("loadingbay_out folder not found")
 	}
 
-	 
 	entries, err := os.ReadDir(loadingBayOut)
 	if err != nil {
 		return fmt.Errorf("failed to read loadingbay_out: %w", err)
@@ -205,7 +194,7 @@ func SendFolder(outgoing chan<- string) error {
 	filesSent := 0
 	for _, entry := range entries {
 		if entry.IsDir() {
-			continue  
+			continue
 		}
 
 		filePath := filepath.Join(loadingBayOut, entry.Name())
@@ -222,13 +211,12 @@ func SendFolder(outgoing chan<- string) error {
 	return nil
 }
 
- 
+// ReceiveFileChunk processes incoming file transfer messages and updates the corresponding transfer state.
 func ReceiveFileChunk(msg FileMessage, transfers map[string]*FileTransferState) (*FileTransferState, error) {
 	filename := msg.Filename
 
 	switch msg.Type {
 	case "file_offer":
-		 
 		transfers[filename] = &FileTransferState{
 			Filename:    filename,
 			FileSize:    msg.FileSize,
@@ -245,13 +233,11 @@ func ReceiveFileChunk(msg FileMessage, transfers map[string]*FileTransferState) 
 			return nil, fmt.Errorf("received chunk for unknown file: %s", filename)
 		}
 
-		 
 		data, err := base64.StdEncoding.DecodeString(msg.Data)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode chunk: %w", err)
 		}
 
-		 
 		state.Chunks[msg.ChunkNum] = data
 		state.Progress++
 
@@ -263,17 +249,15 @@ func ReceiveFileChunk(msg FileMessage, transfers map[string]*FileTransferState) 
 			return nil, fmt.Errorf("received file_end for unknown file: %s", filename)
 		}
 
-		 
 		if state.Progress != state.TotalChunks {
 			return nil, fmt.Errorf("incomplete transfer: got %d/%d chunks", state.Progress, state.TotalChunks)
 		}
 
-		 
+		// Finalize the transfer and save the file.
 		if err := saveFile(state, msg.Checksum); err != nil {
 			return nil, err
 		}
 
-		 
 		delete(transfers, filename)
 		return state, nil
 
@@ -286,16 +270,14 @@ func ReceiveFileChunk(msg FileMessage, transfers map[string]*FileTransferState) 
 	}
 }
 
- 
+// saveFile reassembles chunks, verifies integrity via checksum, and saves the file to the 'loadingbay_in' directory.
 func saveFile(state *FileTransferState, checksum string) error {
 	loadingBayIn := "loadingbay_in"
 
-	 
 	if err := os.MkdirAll(loadingBayIn, 0755); err != nil {
 		return fmt.Errorf("failed to create loadingbay_in: %w", err)
 	}
 
-	 
 	outPath := filepath.Join(loadingBayIn, state.Filename)
 	outFile, err := os.Create(outPath)
 	if err != nil {
@@ -303,7 +285,6 @@ func saveFile(state *FileTransferState, checksum string) error {
 	}
 	defer outFile.Close()
 
-	 
 	hasher := sha256.New()
 	for i := 0; i < state.TotalChunks; i++ {
 		chunk, exists := state.Chunks[i]
@@ -317,17 +298,26 @@ func saveFile(state *FileTransferState, checksum string) error {
 		hasher.Write(chunk)
 	}
 
-	 
 	actualChecksum := hex.EncodeToString(hasher.Sum(nil))
 	if !strings.EqualFold(actualChecksum, checksum) {
-		os.Remove(outPath)  
+		os.Remove(outPath)
 		return fmt.Errorf("checksum mismatch: expected %s, got %s", checksum, actualChecksum)
 	}
 
 	return nil
 }
 
- 
+// SaveFileFromBytes saves raw binary data directly to the 'loadingbay_in' directory under the specified filename.
+func SaveFileFromBytes(filename string, data []byte) error {
+	loadingBayIn := "loadingbay_in"
+	if err := os.MkdirAll(loadingBayIn, 0755); err != nil {
+		return fmt.Errorf("failed to create loadingbay_in: %w", err)
+	}
+	outPath := filepath.Join(loadingBayIn, filename)
+	return os.WriteFile(outPath, data, 0644)
+}
+
+// FormatFileSize converts a byte count into a human-readable string (e.g., KB, MB, GB).
 func FormatFileSize(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {

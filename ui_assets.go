@@ -1,9 +1,9 @@
 package main
 
 const (
-	 
+	// ASCII Art Assets for visual identity and branding.
 
-	 
+	// ASCII_RIZOMA_1 provides a block-style representation of the Rizoma logo, used only in an easter egg.
 	ASCII_RIZOMA_1 = `
  ██▀███   ██▓▒███████▒ ▒█████   ███▄ ▄███▓ ▄▄▄      
 ▓██ ▒ ██▒▓██▒▒ ▒ ▒ ▄▀░▒██▒  ██▒▓██▒▀█▀ ██▒▒████▄    
@@ -17,7 +17,7 @@ const (
              ░                                      
 `
 
-	 
+	// ASCII_RIZOMA_2 is an extended-style logo, suitable for headers.
 	ASCII_RIZOMA_2 = `
  ███████████   █████ ███████████    ███████    ██████   ██████   █████████  
 ░░███░░░░░███ ░░███ ░█░░░░░░███   ███░░░░░███ ░░██████ ██████   ███░░░░░███ 
@@ -29,9 +29,10 @@ const (
 ░░░░░   ░░░░░ ░░░░░ ░░░░░░░░░░░    ░░░░░░░    ░░░░░     ░░░░░ ░░░░░   ░░░░░ 
 `
 
+	// ASCII_DIVIDER is a simple visual line for separating UI sections.
 	ASCII_DIVIDER = "----------------------------------------------------"
 
-	 
+	// ASCII_RIZOMA_SMALL is a compact version of the logo for restricted spaces, not used in the current build.
 	ASCII_RIZOMA_SMALL = `
 ██████╗ ██╗███████╗ ██████╗ ███╗   ███╗ █████╗ 
 ██╔══██╗██║╚══███╔╝██╔═══██╗████╗ ████║██╔══██╗
@@ -42,6 +43,7 @@ const (
 `
 )
 
+// ROSE_FRAMES provides an animation sequence for a growing rose.
 var ROSE_FRAMES = []string{
 
 	`

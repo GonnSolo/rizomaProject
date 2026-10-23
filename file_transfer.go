@@ -24,8 +24,8 @@ type FileMessage struct {
 }
 
 const (
-	// FileChunkSize defines the size of each data chunk (32KB).
-	FileChunkSize = 32 * 1024
+	// FileChunkSize defines the size of each data chunk (16KB for smoother streaming over Tor).
+	FileChunkSize = 16 * 1024
 )
 
 // FileTransferState maintains the progress and data of an active file transfer.
@@ -36,6 +36,8 @@ type FileTransferState struct {
 	Checksum    string         // Expected SHA-256 checksum
 	Chunks      map[int][]byte // Mapping of chunk indices to their binary data
 	Progress    int            // Number of chunks successfully received so far
+	Accepted    bool           // Whether the user has accepted receiving this file
+	Completed   bool           // Whether all chunks and file_end have arrived
 }
 
 // SendFile reads a file from disk and broadcasts it in chunks through the outgoing channel.
@@ -253,12 +255,16 @@ func ReceiveFileChunk(msg FileMessage, transfers map[string]*FileTransferState) 
 			return nil, fmt.Errorf("incomplete transfer: got %d/%d chunks", state.Progress, state.TotalChunks)
 		}
 
-		// Finalize the transfer and save the file.
-		if err := saveFile(state, msg.Checksum); err != nil {
-			return nil, err
-		}
+		state.Completed = true
 
-		delete(transfers, filename)
+		// If user has already accepted the transfer, finalize and write to disk immediately
+		if state.Accepted {
+			if err := saveFile(state, msg.Checksum); err != nil {
+				delete(transfers, filename)
+				return nil, err
+			}
+			delete(transfers, filename)
+		}
 		return state, nil
 
 	case "file_error":
@@ -268,6 +274,29 @@ func ReceiveFileChunk(msg FileMessage, transfers map[string]*FileTransferState) 
 	default:
 		return nil, fmt.Errorf("unknown file message type: %s", msg.Type)
 	}
+}
+
+// AcceptTransfer marks an incoming file transfer as accepted by the user.
+// If the file data has already finished streaming, it saves to disk immediately.
+func AcceptTransfer(filename string, transfers map[string]*FileTransferState) (*FileTransferState, error) {
+	state, exists := transfers[filename]
+	if !exists {
+		return nil, fmt.Errorf("no pending transfer found for %s", filename)
+	}
+	state.Accepted = true
+	if state.Completed {
+		if err := saveFile(state, state.Checksum); err != nil {
+			delete(transfers, filename)
+			return nil, err
+		}
+		delete(transfers, filename)
+	}
+	return state, nil
+}
+
+// DeclineTransfer cancels an incoming file transfer and discards buffered data.
+func DeclineTransfer(filename string, transfers map[string]*FileTransferState) {
+	delete(transfers, filename)
 }
 
 // saveFile reassembles chunks, verifies integrity via checksum, and saves the file to the 'loadingbay_in' directory.

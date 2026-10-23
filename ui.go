@@ -530,10 +530,13 @@ Type /help <command> for details on a specific command.`
 	// File Operations
 	case "/loadingbay":
 		if len(args) == 0 {
+			helpText := "Usage: /loadingbay <list | send <file|*> | sendto <name> <file|*> | preview <file>>"
+			m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyle.Render(helpText))
+			m.chatViewport.GotoBottom()
 			return true, nil
 		}
 
-		subCmd := args[0]
+		subCmd := strings.ToLower(args[0])
 		switch subCmd {
 		case "list":
 			entries, err := os.ReadDir("loadingbay_out")
@@ -549,11 +552,16 @@ Type /help <command> for details on a specific command.`
 
 			var fileList strings.Builder
 			fileList.WriteString("Files in loadingbay_out:\n")
+			count := 0
 			for _, entry := range entries {
 				if !entry.IsDir() {
 					info, _ := entry.Info()
 					fileList.WriteString(fmt.Sprintf("  %s (%s)\n", entry.Name(), FormatFileSize(info.Size())))
+					count++
 				}
+			}
+			if count == 0 {
+				fileList.WriteString("  (Folder is empty. Put files in loadingbay_out/ to send them)")
 			}
 			m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyle.Render(fileList.String()))
 			m.chatViewport.GotoBottom()
@@ -569,7 +577,7 @@ Type /help <command> for details on a specific command.`
 			filePath := filepath.Join("loadingbay_out", filename)
 			stat, err := os.Stat(filePath)
 			if err != nil {
-				m.chatViewport.SetContent(m.chatViewport.View() + "\n" + errorStyle.Render(fmt.Sprintf("Error: %s not found", filename)))
+				m.chatViewport.SetContent(m.chatViewport.View() + "\n" + errorStyle.Render(fmt.Sprintf("Error: %s not found in loadingbay_out/", filename)))
 				m.chatViewport.GotoBottom()
 				return true, nil
 			}
@@ -579,6 +587,69 @@ Type /help <command> for details on a specific command.`
 				FormatFileSize(stat.Size()),
 				stat.ModTime().Format("2006-01-02 15:04:05"))
 			m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyle.Render(info))
+			m.chatViewport.GotoBottom()
+			return true, nil
+
+		case "send":
+			if len(args) < 2 {
+				m.chatViewport.SetContent(m.chatViewport.View() + "\n" + errorStyle.Render("Usage: /loadingbay send <file|*>"))
+				m.chatViewport.GotoBottom()
+				return true, nil
+			}
+			fileArg := args[1]
+
+			if _, err := os.Stat("loadingbay_out"); os.IsNotExist(err) {
+				m.chatViewport.SetContent(m.chatViewport.View() + "\n" + errorStyle.Render("Error: loadingbay_out folder not found"))
+				os.MkdirAll("loadingbay_out", 0755)
+				m.chatViewport.GotoBottom()
+				return true, nil
+			}
+
+			if fileArg == "*" {
+				// Send all files in loadingbay_out/
+				go func() {
+					entries, err := os.ReadDir("loadingbay_out")
+					if err != nil {
+						m.progressChan <- fmt.Sprintf("Send error: %v", err)
+						return
+					}
+					sentCount := 0
+					for _, entry := range entries {
+						if entry.IsDir() {
+							continue
+						}
+						fp := filepath.Join("loadingbay_out", entry.Name())
+						if err := SendFile(fp, m.netManager.Outgoing); err != nil {
+							m.progressChan <- fmt.Sprintf("Error sending %s: %v", entry.Name(), err)
+							continue
+						}
+						sentCount++
+					}
+					if sentCount == 0 {
+						m.progressChan <- "No files found in loadingbay_out/"
+					} else {
+						m.progressChan <- fmt.Sprintf("All files sent (%d)", sentCount)
+					}
+				}()
+				m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyle.Render("Broadcasting all files from loadingbay_out/ to room..."))
+			} else {
+				// Send single file
+				filePath := filepath.Join("loadingbay_out", fileArg)
+				stat, err := os.Stat(filePath)
+				if err != nil {
+					m.chatViewport.SetContent(m.chatViewport.View() + "\n" + errorStyle.Render(fmt.Sprintf("Error: %s not found in loadingbay_out/", fileArg)))
+					m.chatViewport.GotoBottom()
+					return true, nil
+				}
+				go func() {
+					if err := SendFile(filePath, m.netManager.Outgoing); err != nil {
+						m.progressChan <- fmt.Sprintf("Error sending %s: %v", fileArg, err)
+					} else {
+						m.progressChan <- fmt.Sprintf("Sent %s (%s) successfully", fileArg, FormatFileSize(stat.Size()))
+					}
+				}()
+				m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyle.Render(fmt.Sprintf("Sending %s (%s)...", fileArg, FormatFileSize(stat.Size()))))
+			}
 			m.chatViewport.GotoBottom()
 			return true, nil
 
@@ -662,6 +733,10 @@ Type /help <command> for details on a specific command.`
 
 		case "cancel":
 			m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyle.Render("Transfer cancellation not yet implemented"))
+			m.chatViewport.GotoBottom()
+			return true, nil
+		default:
+			m.chatViewport.SetContent(m.chatViewport.View() + "\n" + errorStyle.Render(fmt.Sprintf("Unknown subcommand: %s. Use /loadingbay for help.", subCmd)))
 			m.chatViewport.GotoBottom()
 			return true, nil
 		}
@@ -833,8 +908,11 @@ Built with Go, TOR, love and determination by GonnSolo.`
 
 	case "/host":
 		// Quick host command - only works from menu
-		if len(args) > 0 && m.state == stateMenu {
-			m.reqSecret = args[0]
+		if m.state == stateMenu {
+			m.reqSecret = ""
+			if len(args) > 0 {
+				m.reqSecret = args[0]
+			}
 			m.state = stateChat
 			m.connectionStart = time.Now()
 			m.globalInput.Blur()
@@ -848,11 +926,31 @@ Built with Go, TOR, love and determination by GonnSolo.`
 					}
 					if err := m.netManager.Host(context.Background(), "rizoma_key.pem", m.reqSecret, m.masterKey, m.progressChan); err != nil {
 						m.progressChan <- fmt.Sprintf("Host Error: %v", err)
+						return
 					}
+					m.progressChan <- "HOST_CREATED_SUCCESS"
 				}()
 				return nil
 			}
 		}
+		return true, nil
+
+	case "/secret":
+		sysStyleLocal := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Italic(true)
+		if len(args) > 0 {
+			newSec := strings.Join(args, " ")
+			m.netManager.SetSecret(newSec)
+			m.reqSecret = newSec
+			m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyleLocal.Render(fmt.Sprintf("Session secret updated to: %s", newSec)))
+		} else {
+			cur := m.netManager.GetSecret()
+			if cur == "" {
+				m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyleLocal.Render("Current secret: (None - Open Server). Use /secret <value> to set one."))
+			} else {
+				m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyleLocal.Render(fmt.Sprintf("Current secret: %s", cur)))
+			}
+		}
+		m.chatViewport.GotoBottom()
 		return true, nil
 
 	case "/preheat":
@@ -1166,34 +1264,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if len(parts) > 0 {
 							switch strings.ToLower(parts[0]) {
 							case "/host":
+								m.reqSecret = ""
 								if len(parts) > 1 {
 									m.reqSecret = parts[1]
-									m.state = stateChat
-									m.connectionStart = time.Now()
-									m.globalInput.Blur()
-									m.textInput.Focus()
-									return m, func() tea.Msg {
-										go func() {
-											if err := m.netManager.StartTor(context.Background(), m.progressChan); err != nil {
-												m.progressChan <- fmt.Sprintf("Tor Start Error: %v", err)
-												return
-											}
-											if err := m.netManager.Host(context.Background(), "rizoma_key.pem", m.reqSecret, m.masterKey, m.progressChan); err != nil {
-												m.progressChan <- fmt.Sprintf("Host Error: %v", err)
-											}
-										}()
-										return nil
-									}
+								}
+								m.state = stateChat
+								m.connectionStart = time.Now()
+								m.globalInput.Blur()
+								m.textInput.Focus()
+								return m, func() tea.Msg {
+									go func() {
+										if err := m.netManager.StartTor(context.Background(), m.progressChan); err != nil {
+											m.progressChan <- fmt.Sprintf("Tor Start Error: %v", err)
+											return
+										}
+										if err := m.netManager.Host(context.Background(), "rizoma_key.pem", m.reqSecret, m.masterKey, m.progressChan); err != nil {
+											m.progressChan <- fmt.Sprintf("Host Error: %v", err)
+											return
+										}
+										m.progressChan <- "HOST_CREATED_SUCCESS"
+									}()
+									return nil
 								}
 							case "/connect":
-								if len(parts) >= 5 {
+								if len(parts) >= 4 {
 									alias := parts[1]
 									connectType := strings.ToLower(parts[2])
 
 									if connectType == "key" {
-										// /connect <alias> key <encrypted_key> <secret>
+										// /connect <alias> key <encrypted_key> [secret]
 										encryptedKey := parts[3]
-										secret := parts[4]
+										secret := ""
+										if len(parts) >= 5 {
+											secret = parts[4]
+										}
 
 										// Decrypt the key
 										address, err := DecryptOnion(encryptedKey, alias)
@@ -1223,9 +1327,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 										}
 
 									} else if connectType == "address" {
-										// /connect <alias> address <address.onion> <secret>
+										// /connect <alias> address <address.onion> [secret]
 										address := parts[3]
-										secret := parts[4]
+										secret := ""
+										if len(parts) >= 5 {
+											secret = parts[4]
+										}
 
 										if !strings.HasSuffix(address, ".onion") {
 											address = address + ".onion"
@@ -1253,9 +1360,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									}
 								}
 							case "/contact":
-								if len(parts) >= 3 {
+								if len(parts) >= 2 {
 									alias := parts[1]
-									secret := parts[2]
+									secret := ""
+									if len(parts) >= 3 {
+										secret = parts[2]
+									}
 
 									// Look up contact
 									address, exists := m.config.Contacts[alias]
@@ -1324,7 +1434,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 					} else if cmd == "1" {
-						m.state = stateHost
+						// Host Mode: Do not ask for secret before creating the server!
+						m.reqSecret = ""
+						m.state = stateChat
+						m.connectionStart = time.Now()
+						m.globalInput.Blur()
+						m.textInput.Focus()
+
+						return m, func() tea.Msg {
+							go func() {
+								if err := m.netManager.StartTor(context.Background(), m.progressChan); err != nil {
+									m.progressChan <- fmt.Sprintf("Tor Start Error: %v", err)
+									return
+								}
+								if err := m.netManager.Host(context.Background(), "rizoma_key.pem", "", m.masterKey, m.progressChan); err != nil {
+									m.progressChan <- fmt.Sprintf("Host Error: %v", err)
+									return
+								}
+								m.progressChan <- "HOST_CREATED_SUCCESS"
+							}()
+							return nil
+						}
 					} else if cmd == "2" {
 						m.state = stateConnect
 					} else if cmd == "3" {
@@ -1361,42 +1491,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}()
 					}
 				} else if m.state == stateHost {
-					// Host Logic: Expect Password/Handshake
-					// For MVP, if they type anything, we start hosting with that "password" (secret)
-					// Trigger Host Logic
-					// We need to return a Cmd to start hosting
-					if cmd != "" {
-						// Simulate successful host start for now -> Chat
-						// In reality, we need to call nm.Host() which is blocking/async.
-						// We'll transition to a "Waiting" state or Chat.
-						// Let's assume we reuse the same secret for simplicity in MVP or derive it.
-						// Actually, user wants "Password -> Handshake -> Chat"
-						// So we treat `cmd` as the secret.
-						m.reqSecret = cmd
-						// Trigger the async hosting via a special Cmd or Msg?
-						// We can just use the progressChan or similar.
-						// But nm.Host needs context.
-						// Let's just switch to Chat for visual verification first.
-						m.state = stateChat
-						m.connectionStart = time.Now()
-						m.globalInput.Blur()
-						m.textInput.Focus()
+					// Fallback for direct stateHost: Start hosting immediately
+					m.reqSecret = cmd
+					m.state = stateChat
+					m.connectionStart = time.Now()
+					m.globalInput.Blur()
+					m.textInput.Focus()
 
-						// Lazy Load Tor if needed
-						return m, func() tea.Msg {
-							go func() {
-								// Ensure Tor
-								if err := m.netManager.StartTor(context.Background(), m.progressChan); err != nil {
-									m.progressChan <- fmt.Sprintf("Tor Start Error: %v", err)
-									return
-								}
-								// Host
-								if err := m.netManager.Host(context.Background(), "rizoma_key.pem", m.reqSecret, m.masterKey, m.progressChan); err != nil {
-									m.progressChan <- fmt.Sprintf("Host Error: %v", err)
-								}
-							}()
-							return nil
-						}
+					return m, func() tea.Msg {
+						go func() {
+							if err := m.netManager.StartTor(context.Background(), m.progressChan); err != nil {
+								m.progressChan <- fmt.Sprintf("Tor Start Error: %v", err)
+								return
+							}
+							if err := m.netManager.Host(context.Background(), "rizoma_key.pem", m.reqSecret, m.masterKey, m.progressChan); err != nil {
+								m.progressChan <- fmt.Sprintf("Host Error: %v", err)
+								return
+							}
+							m.progressChan <- "HOST_CREATED_SUCCESS"
+						}()
+						return nil
 					}
 				} else if m.state == stateConnect {
 					// Connect Logic - Menu Selection
@@ -1433,12 +1547,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								alias := m.sortedContacts[idx-1]
 								address := m.config.Contacts[alias]
 								m.reqConnect = address
+								m.reqSecret = ""
 
-								// Ask for Secret
-								m.state = stateConnectSecret
-								m.connectSecretInput.SetValue("")
-								m.connectSecretInput.Focus()
+								m.state = stateNewContactWait
 								m.globalInput.Blur()
+								m.status = fmt.Sprintf("Connecting to %s...", alias)
+								m.logs = append(m.logs, m.status)
+								m.statusViewport.SetContent(m.renderLogs(m.statusViewport.Width))
+								m.statusViewport.GotoBottom()
+
+								return m, func() tea.Msg {
+									go func() {
+										if err := m.netManager.StartTor(context.Background(), m.progressChan); err != nil {
+											m.progressChan <- "CONNECTION_FAILED"
+											return
+										}
+										err := m.netManager.Connect(context.Background(), m.reqConnect, "", m.progressChan)
+										if err != nil {
+											errStr := err.Error()
+											if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") {
+												m.progressChan <- "CONNECTION_TIMEOUT"
+											} else {
+												m.progressChan <- "CONNECTION_FAILED"
+											}
+											return
+										}
+										m.progressChan <- "OP_CONNECT_SUCCESS"
+									}()
+									return nil
+								}
 							} else {
 								m.logs = append(m.logs, fmt.Sprintf("Invalid Index: %d", idx))
 								m.statusViewport.SetContent(m.renderLogs(m.statusViewport.Width))
@@ -1502,13 +1639,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.awaitingFileConfirm = false
 						m.pendingFileOffer = nil
 						if strings.ToLower(input) == "y" {
-							// Initialize the transfer state so incoming chunks are accepted
-							if _, err := ReceiveFileChunk(*offer, m.fileTransfers); err != nil {
-								m.chatViewport.SetContent(m.chatViewport.View() + "\n" + boldRedStyle.Render(fmt.Sprintf("Transfer init error: %v", err)))
+							state, err := AcceptTransfer(offer.Filename, m.fileTransfers)
+							if err != nil {
+								m.chatViewport.SetContent(m.chatViewport.View() + "\n" + boldRedStyle.Render(fmt.Sprintf("Transfer error: %v", err)))
+							} else if state.Completed {
+								m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyle.Render(fmt.Sprintf("Received: %s → loadingbay_in/", offer.Filename)))
 							} else {
 								m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyle.Render(fmt.Sprintf("Receiving %s from %s...", offer.Filename, m.pendingFileOfferFrom)))
 							}
 						} else {
+							DeclineTransfer(offer.Filename, m.fileTransfers)
 							m.chatViewport.SetContent(m.chatViewport.View() + "\n" + boldRedStyle.Render("Transfer declined."))
 						}
 						m.pendingFileOfferFrom = ""
@@ -1542,120 +1682,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					handled, cmd := m.handleChatCommand(input)
 					if handled {
 						return m, cmd
-					}
-
-					// Check for /loadingbay send command (existing)
-					if strings.HasPrefix(input, "/loadingbay send ") {
-						args := strings.TrimPrefix(input, "/loadingbay send ")
-						args = strings.TrimSpace(args)
-
-						if args == "*" {
-							// Send entire folder
-							go func() {
-								// Count files first
-								loadingBayOut := "loadingbay_out"
-								entries, err := os.ReadDir(loadingBayOut)
-								if err != nil {
-									errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-									sysStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
-									m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", errorStyle.Render("Error: loadingbay_out folder not found")))
-									// Create the folder
-									if err := os.MkdirAll(loadingBayOut, 0755); err == nil {
-										m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render("Created loadingbay_out folder for you")))
-									}
-									return
-								}
-
-								fileCount := 0
-								for _, entry := range entries {
-									if !entry.IsDir() {
-										fileCount++
-									}
-								}
-
-								if fileCount == 0 {
-									errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-									m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", errorStyle.Render("Error: No files in loadingbay_out/")))
-									return
-								}
-
-								// Send folder status message
-								sysStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
-								m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("Sending loadingbay_out folder (%d files)...", fileCount))))
-
-								m.folderSendTotal = fileCount
-								m.folderSendCount = 0
-
-								// Send each file
-								for _, entry := range entries {
-									if entry.IsDir() {
-										continue
-									}
-
-									filePath := filepath.Join(loadingBayOut, entry.Name())
-									stat, _ := entry.Info()
-
-									if err := SendFile(filePath, m.netManager.Outgoing); err != nil {
-										errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-										m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", errorStyle.Render(fmt.Sprintf("Error sending %s: %v", entry.Name(), err))))
-										continue
-									}
-
-									m.folderSendCount++
-									m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("%d/%d Sent %s (%s)", m.folderSendCount, m.folderSendTotal, entry.Name(), FormatFileSize(stat.Size())))))
-								}
-
-								// Final message
-								m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("All files sent (%d/%d)", m.folderSendCount, m.folderSendTotal))))
-							}()
-						} else {
-							// Send single file
-							filename := args
-							filePath := filepath.Join("loadingbay_out", filename)
-
-							// Check if folder exists first
-							if _, err := os.Stat("loadingbay_out"); os.IsNotExist(err) {
-								errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-								sysStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
-								m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", errorStyle.Render("Error: loadingbay_out folder not found")))
-								// Create the folder
-								if err := os.MkdirAll("loadingbay_out", 0755); err == nil {
-									m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render("Created loadingbay_out folder for you")))
-								}
-								m.chatViewport.GotoBottom()
-								return m, nil
-							}
-
-							// Check if file exists
-							stat, err := os.Stat(filePath)
-							if err != nil {
-								errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-								m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", errorStyle.Render(fmt.Sprintf("Error: %s not found in loadingbay_out/", filename))))
-								m.chatViewport.GotoBottom()
-								return m, nil
-							}
-
-							// Send file
-							go func() {
-								sysStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
-								fileSize := stat.Size()
-
-								// Show starting message
-								m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("Sending %s (%s) - 0%%", filename, FormatFileSize(fileSize)))))
-
-								if err := SendFile(filePath, m.netManager.Outgoing); err != nil {
-									errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-									m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", errorStyle.Render(fmt.Sprintf("Error: %v", err))))
-									return
-								}
-
-								// Show completion
-								m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("Sent %s (%s) - 100%%", filename, FormatFileSize(fileSize)))))
-							}()
-						}
-
-						m.chatViewport.GotoBottom()
-						return m, nil
 					}
 
 					// Normal chat message
@@ -1788,16 +1814,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 					// Detect if Token or Address
 					if strings.HasSuffix(m.reqConnect, ".onion") {
-						// Address Mode: Ask Secret
-						m.state = stateNewContactSecretEntry
-						m.connectSecretInput.Focus()
-						m.connectSecretInput.SetValue("")
-						m.connectSecretInput.Prompt = "Secret: "
-						m.connectSecretInput.Placeholder = "Shared Secret"
-						m.globalInput.Blur()
+						// Address Mode: Do not ask for secret beforehand!
+						m.reqSecret = ""
+						m.state = stateConnectedAskSave
+						m.globalInput.Focus()
+						m.globalInput.SetValue("")
+						m.globalInput.Prompt = "Save Contact? [Y/n]: "
 					} else {
 						// Token Mode: Decrypt using Alias
-						// DEBUG LOGS
 						m.logs = append(m.logs, fmt.Sprintf("Token Len: %d | Alias: '%s'", len(m.reqConnect), alias))
 
 						decrypted, err := DecryptOnion(m.reqConnect, alias)
@@ -1811,16 +1835,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 						// Success
 						m.reqConnect = decrypted + ".onion"
-						// Do NOT automatically set reqSecret.
-						// The user requested to be ASKED for the secret.
+						m.reqSecret = ""
 
-						// Proceed to Secret Entry
-						m.state = stateNewContactSecretEntry
-						m.connectSecretInput.Focus()
-						m.connectSecretInput.SetValue("")
-						m.connectSecretInput.Prompt = "Secret: "
-						m.connectSecretInput.Placeholder = "Shared Secret"
-						m.globalInput.Blur()
+						// Proceed to Ask Save without asking for secret beforehand
+						m.state = stateConnectedAskSave
+						m.globalInput.Focus()
+						m.globalInput.SetValue("")
+						m.globalInput.Prompt = "Save Contact? [Y/n]: "
 					}
 				}
 				return m, nil
@@ -1999,12 +2020,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Connect Flow Inputs
 		if m.state == stateConnectAddress {
 			if msg.Type == tea.KeyEnter {
-				addr := m.connectAddrInput.Value()
+				addr := strings.TrimSpace(m.connectAddrInput.Value())
 				if addr != "" {
-					m.reqConnect = addr // Temporarily store
-					m.state = stateConnectSecret
-					m.connectSecretInput.Focus()
+					m.reqConnect = addr
+					m.reqSecret = ""
+					m.state = stateNewContactWait
 					m.connectAddrInput.Blur()
+					m.status = fmt.Sprintf("Connecting to %s...", addr)
+					m.logs = append(m.logs, m.status)
+					m.statusViewport.SetContent(m.renderLogs(m.statusViewport.Width))
+					m.statusViewport.GotoBottom()
+
+					return m, func() tea.Msg {
+						go func() {
+							if err := m.netManager.StartTor(context.Background(), m.progressChan); err != nil {
+								m.progressChan <- "CONNECTION_FAILED"
+								return
+							}
+							err := m.netManager.Connect(context.Background(), m.reqConnect, "", m.progressChan)
+							if err != nil {
+								errStr := err.Error()
+								if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") {
+									m.progressChan <- "CONNECTION_TIMEOUT"
+								} else {
+									m.progressChan <- "CONNECTION_FAILED"
+								}
+								return
+							}
+							m.progressChan <- "OP_CONNECT_SUCCESS"
+						}()
+						return nil
+					}
 				}
 				return m, nil
 			} else if msg.Type == tea.KeyEsc {
@@ -2019,42 +2065,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.state == stateConnectSecret {
 			if msg.Type == tea.KeyEnter {
-				// Execute Connect
+				// User entered secret when requested by host!
 				secret := m.connectSecretInput.Value()
 				m.reqSecret = secret
 
-				// Use Standard Connect Flow
 				m.state = stateNewContactWait
 				m.connectSecretInput.Blur()
-				m.status = "Connecting..."
+				m.status = "Verifying secret..."
 				m.logs = append(m.logs, m.status)
 				m.statusViewport.SetContent(m.renderLogs(m.statusViewport.Width))
+				m.statusViewport.GotoBottom()
 
-				return m, func() tea.Msg {
-					go func() {
-						if err := m.netManager.StartTor(context.Background(), m.progressChan); err != nil {
-							m.progressChan <- "CONNECTION_FAILED"
-							return
-						}
-						err := m.netManager.Connect(context.Background(), m.reqConnect, m.reqSecret, m.progressChan)
-						if err != nil {
-							errStr := err.Error()
-							if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline") {
-								m.progressChan <- "CONNECTION_TIMEOUT"
-							} else {
-								m.progressChan <- "CONNECTION_FAILED"
-							}
-							return
-						}
-						m.progressChan <- "OP_CONNECT_SUCCESS"
-					}()
-					return nil
-				}
-			} else if msg.Type == tea.KeyEsc {
-				m.state = stateConnectAddress
-				m.connectSecretInput.Blur()
-				m.connectAddrInput.Focus()
+				// Unblock pending prompt if active
+				m.netManager.SubmitSecret(secret)
 				return m, nil
+			} else if msg.Type == tea.KeyEsc {
+				m.netManager.CancelSecret()
+				m.state = stateMenu
+				m.connectSecretInput.Blur()
+				m.globalInput.Focus()
+				return m, tick()
 			}
 			m.connectSecretInput, tiCmd = m.connectSecretInput.Update(msg)
 			return m, tiCmd
@@ -2297,6 +2327,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case incomingMsg:
 		raw := string(msg)
 
+		if strings.HasPrefix(raw, "AUTH_SECRET_REQUIRED:") {
+			addr := strings.TrimPrefix(raw, "AUTH_SECRET_REQUIRED:")
+			m.state = stateConnectSecret
+			m.connectSecretInput.SetValue("")
+			m.connectSecretInput.Prompt = "Secret: "
+			m.connectSecretInput.Placeholder = "Enter session secret..."
+			m.connectSecretInput.Focus()
+			m.globalInput.Blur()
+			m.logs = append(m.logs, lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render(fmt.Sprintf("Host [%s] requires a secret.", addr)))
+			m.statusViewport.SetContent(m.renderLogs(m.statusViewport.Width))
+			m.statusViewport.GotoBottom()
+			return m, waitForIncoming(m.netManager)
+		}
+
 		// Check for peer-tagged messages from NetworkManager
 		if strings.HasPrefix(raw, "PEER_MSG:") {
 			// Format: PEER_MSG:peer_id:peer_name:peer_color:content
@@ -2321,33 +2365,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, waitForIncoming(m.netManager)
 
 					case "file_offer":
-						// Hold the offer for confirmation
+						// Register offer in transfers map so incoming chunks are saved in memory
+						ReceiveFileChunk(fileMsg, m.fileTransfers)
+
 						fileMsgCopy := fileMsg
 						m.pendingFileOffer = &fileMsgCopy
 						m.pendingFileOfferFrom = peerName
 						m.awaitingFileConfirm = true
-						prompt := fmt.Sprintf("Will you receive %s from %s? (y/n)", fileMsg.Filename, peerName)
+						prompt := fmt.Sprintf("Will you receive %s (%s) from %s? (y/n)", fileMsg.Filename, FormatFileSize(fileMsg.FileSize), peerName)
 						m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", boldRedStyle.Render(prompt)))
 						m.chatViewport.GotoBottom()
+
+						// Host relays file_offer to other peers
+						go func(senderID string, msg string) {
+							m.netManager.Outgoing <- fmt.Sprintf("RELAY:%s:%s", senderID, msg)
+						}(parts[1], content)
+
 						return m, waitForIncoming(m.netManager)
 
 					default:
-						// file_chunk / file_end — process only if transfer state exists
+						// file_chunk / file_end — process chunks into transfer state
 						state, err := ReceiveFileChunk(fileMsg, m.fileTransfers)
 						if err != nil {
-							// Silently drop — no transfer was accepted for this file
+							// Silently drop
 						} else if state != nil {
 							switch fileMsg.Type {
 							case "file_chunk":
-								if state.Progress%10 == 0 || state.Progress == state.TotalChunks {
+								if state.Accepted && (state.Progress%10 == 0 || state.Progress == state.TotalChunks) {
 									progress := int(float64(state.Progress) / float64(state.TotalChunks) * 100)
 									m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("Receiving: %s - %d%%", fileMsg.Filename, progress))))
 								}
 							case "file_end":
-								m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("Received: %s → loadingbay_in/", fileMsg.Filename))))
+								if state.Accepted {
+									m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("Received: %s → loadingbay_in/", fileMsg.Filename))))
+								}
 							}
 							m.chatViewport.GotoBottom()
 						}
+
+						// Host relays file_chunk / file_end to other peers
+						go func(senderID string, msg string) {
+							m.netManager.Outgoing <- fmt.Sprintf("RELAY:%s:%s", senderID, msg)
+						}(parts[1], content)
+
 						return m, waitForIncoming(m.netManager)
 					}
 				}
@@ -2419,11 +2479,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, waitForIncoming(m.netManager)
 
 			case "file_offer":
+				ReceiveFileChunk(fileMsg, m.fileTransfers)
 				fileMsgCopy := fileMsg
 				m.pendingFileOffer = &fileMsgCopy
 				m.pendingFileOfferFrom = "peer"
 				m.awaitingFileConfirm = true
-				prompt := fmt.Sprintf("Will you receive %s from peer? (y/n)", fileMsg.Filename)
+				prompt := fmt.Sprintf("Will you receive %s (%s) from peer? (y/n)", fileMsg.Filename, FormatFileSize(fileMsg.FileSize))
 				m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", boldRedStyle.Render(prompt)))
 				m.chatViewport.GotoBottom()
 				return m, waitForIncoming(m.netManager)
@@ -2433,12 +2494,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err == nil && state != nil {
 					switch fileMsg.Type {
 					case "file_chunk":
-						if state.Progress%10 == 0 || state.Progress == state.TotalChunks {
+						if state.Accepted && (state.Progress%10 == 0 || state.Progress == state.TotalChunks) {
 							progress := int(float64(state.Progress) / float64(state.TotalChunks) * 100)
 							m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("Receiving: %s - %d%%", fileMsg.Filename, progress))))
 						}
 					case "file_end":
-						m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("Received: %s → loadingbay_in/", fileMsg.Filename))))
+						if state.Accepted {
+							m.chatViewport.SetContent(m.chatViewport.View() + fmt.Sprintf("\n%s", sysStyle.Render(fmt.Sprintf("Received: %s → loadingbay_in/", fileMsg.Filename))))
+						}
 					}
 					m.chatViewport.GotoBottom()
 				}
@@ -2547,6 +2610,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logs = append(m.logs, m.status)
 			m.statusViewport.SetContent(m.renderLogs(m.statusViewport.Width))
 			return m, waitForIncoming(m.netManager)
+		}
+
+		if msg == "HOST_CREATED_SUCCESS" {
+			sysStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
+			subStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
+			m.chatViewport.SetContent(m.chatViewport.View() + "\n" + sysStyle.Render(fmt.Sprintf("✦ Server created! Listening on %s.onion", m.netManager.OnionAddr)))
+			m.chatViewport.SetContent(m.chatViewport.View() + "\n" + subStyle.Render("✦ No secret currently set (Open Server). Use /secret <password> to set one."))
+			m.chatViewport.SetContent(m.chatViewport.View() + "\n" + subStyle.Render("✦ Press CTRL + Y to copy your encrypted session key."))
+			m.chatViewport.GotoBottom()
+			return m, waitForIncoming(m.netManager)
+		}
+
+		if strings.HasPrefix(string(msg), "AUTH_SECRET_REQUIRED:") {
+			addr := strings.TrimPrefix(string(msg), "AUTH_SECRET_REQUIRED:")
+			m.state = stateConnectSecret
+			m.connectSecretInput.SetValue("")
+			m.connectSecretInput.Prompt = "Secret: "
+			m.connectSecretInput.Placeholder = "Enter session secret..."
+			m.connectSecretInput.Focus()
+			m.globalInput.Blur()
+			m.logs = append(m.logs, lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render(fmt.Sprintf("Host [%s] requires a secret.", addr)))
+			m.statusViewport.SetContent(m.renderLogs(m.statusViewport.Width))
+			m.statusViewport.GotoBottom()
+			return m, nil
 		}
 
 		// Handle Host Errors with helpful message
